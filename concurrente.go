@@ -3,13 +3,15 @@ package main
 import (
 	"encoding/csv"
 	"fmt"
+	"io/ioutil"
 	"math"
-	"os"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 )
 
+// Calcula la distancia euclidiana entre dos puntos
 func distance(a, b []float64) float64 {
 	var sum float64
 	for i := range a {
@@ -18,7 +20,8 @@ func distance(a, b []float64) float64 {
 	return math.Sqrt(sum)
 }
 
-func closestCentroid(point []float64, centroids [][]float64, wg *sync.WaitGroup, idx int, assignments chan<- int) {
+// Encuentra el centroide más cercano a un punto dado
+func closestCentroid(point []float64, centroids [][]float64, wg *sync.WaitGroup, assignments chan<- int) {
 	defer wg.Done()
 	minDist := math.MaxFloat64
 	var closestIdx int
@@ -32,7 +35,8 @@ func closestCentroid(point []float64, centroids [][]float64, wg *sync.WaitGroup,
 	assignments <- closestIdx
 }
 
-func updateCentroids(points [][]float64, assignments []int, k int, wg *sync.WaitGroup, mutex *sync.Mutex, newCentroids chan<- [][]float64) {
+// Actualiza los centroides basándose en las asignaciones de puntos
+func updateCentroids(points [][]float64, assignments []int, k int, wg *sync.WaitGroup, newCentroids chan<- [][]float64) {
 	defer wg.Done()
 	centroids := make([][]float64, k)
 	counts := make([]int, k)
@@ -43,21 +47,24 @@ func updateCentroids(points [][]float64, assignments []int, k int, wg *sync.Wait
 
 	for i, point := range points {
 		cluster := assignments[i]
-		mutex.Lock()
-		centroids[cluster] = addVectors(centroids[cluster], point)
+		for j := range point {
+			centroids[cluster][j] += point[j]
+		}
 		counts[cluster]++
-		mutex.Unlock()
 	}
 
 	for i := range centroids {
 		for j := range centroids[i] {
-			centroids[i][j] /= float64(counts[i])
+			if counts[i] > 0 {
+				centroids[i][j] /= float64(counts[i])
+			}
 		}
 	}
 
 	newCentroids <- centroids
 }
 
+// Suma dos vectores
 func addVectors(a, b []float64) []float64 {
 	result := make([]float64, len(a))
 	for i := range a {
@@ -67,26 +74,40 @@ func addVectors(a, b []float64) []float64 {
 }
 
 func main() {
-	file, err := os.Open("datos.csv")
+	// URL del archivo CSV en formato RAW en GitHub
+	url := "https://raw.githubusercontent.com/cesar6793/concurrente/main/datos.csv"
+
+	// Realiza una solicitud GET para obtener el archivo CSV
+	resp, err := http.Get(url)
 	if err != nil {
-		fmt.Println("Error al abrir el archivo:", err)
+		fmt.Println("Error al obtener el archivo:", err)
 		return
 	}
-	defer file.Close()
+	defer resp.Body.Close()
 
-	reader := csv.NewReader(file)
+	// Lee el contenido del archivo
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("Error al leer el contenido del archivo:", err)
+		return
+	}
 
+	// Crea un lector CSV
+	reader := csv.NewReader(strings.NewReader(string(body)))
+
+	// Lee todos los registros del CSV
 	records, err := reader.ReadAll()
 	if err != nil {
 		fmt.Println("Error al leer el archivo CSV:", err)
 		return
 	}
 
+	// Convierte los registros en puntos flotantes
 	points := make([][]float64, len(records))
 	for i, record := range records {
 		points[i] = make([]float64, len(record))
 		for j, value := range record {
-			value = strings.TrimPrefix(value, "\ufeff")
+			value = strings.TrimPrefix(value, "\ufeff") // Maneja posibles BOM
 			point, err := strconv.ParseFloat(value, 64)
 			if err != nil {
 				fmt.Println("Error al convertir el valor:", err)
@@ -96,24 +117,24 @@ func main() {
 		}
 	}
 
-	k := 4
+	k := 4 // Número de clusters
 
+	// Inicializa los centroides como los primeros k puntos
 	centroids := make([][]float64, k)
 	copy(centroids, points[:k])
 
 	assignments := make([]int, len(points))
-
 	maxIterations := 100
+
 	for iter := 0; iter < maxIterations; iter++ {
 		var wg sync.WaitGroup
 		assignmentsChan := make(chan int, len(points))
 		newCentroidsChan := make(chan [][]float64, 1)
-		var mutex sync.Mutex
 
 		// Asignar puntos a los clusters más cercanos concurrentemente
 		wg.Add(len(points))
-		for i, point := range points {
-			go closestCentroid(point, centroids, &wg, i, assignmentsChan)
+		for _, point := range points {
+			go closestCentroid(point, centroids, &wg, assignmentsChan)
 		}
 		wg.Wait()
 		close(assignmentsChan)
@@ -127,10 +148,11 @@ func main() {
 
 		// Calcular nuevos centroides concurrentemente
 		wg.Add(1)
-		go updateCentroids(points, assignments, k, &wg, &mutex, newCentroidsChan)
+		go updateCentroids(points, assignments, k, &wg, newCentroidsChan)
 		wg.Wait()
 		newCentroids := <-newCentroidsChan
 
+		// Verificar convergencia
 		converged := true
 		for i := range centroids {
 			if distance(centroids[i], newCentroids[i]) > 0.001 {
