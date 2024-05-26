@@ -20,8 +20,8 @@ func distance(a, b []float64) float64 {
 	return math.Sqrt(sum)
 }
 
-// Encuentra el centroide más cercano a un punto dado
-func closestCentroid(point []float64, centroids [][]float64, wg *sync.WaitGroup, assignments chan<- int) {
+// Encuentra el centroide más cercano a un punto dado y lo envía a través del canal
+func closestCentroid(point []float64, centroids [][]float64, idx int, assignments chan<- int, wg *sync.WaitGroup) {
 	defer wg.Done()
 	minDist := math.MaxFloat64
 	var closestIdx int
@@ -35,8 +35,8 @@ func closestCentroid(point []float64, centroids [][]float64, wg *sync.WaitGroup,
 	assignments <- closestIdx
 }
 
-// Actualiza los centroides basándose en las asignaciones de puntos
-func updateCentroids(points [][]float64, assignments []int, k int, wg *sync.WaitGroup, newCentroids chan<- [][]float64) {
+// Actualiza los centroides basándose en las asignaciones de puntos y los envía a través del canal
+func updateCentroids(points [][]float64, assignments []int, k int, newCentroids chan<- [][]float64, wg *sync.WaitGroup) {
 	defer wg.Done()
 	centroids := make([][]float64, k)
 	counts := make([]int, k)
@@ -64,15 +64,7 @@ func updateCentroids(points [][]float64, assignments []int, k int, wg *sync.Wait
 	newCentroids <- centroids
 }
 
-// Suma dos vectores
-func addVectors(a, b []float64) []float64 {
-	result := make([]float64, len(a))
-	for i := range a {
-		result[i] = a[i] + b[i]
-	}
-	return result
-}
-
+// Función principal
 func main() {
 	// URL del archivo CSV en formato RAW en GitHub
 	url := "https://raw.githubusercontent.com/cesar6793/concurrente/main/datos.csv"
@@ -133,8 +125,8 @@ func main() {
 
 		// Asignar puntos a los clusters más cercanos concurrentemente
 		wg.Add(len(points))
-		for _, point := range points {
-			go closestCentroid(point, centroids, &wg, assignmentsChan)
+		for i, point := range points {
+			go closestCentroid(point, centroids, i, assignmentsChan, &wg)
 		}
 		wg.Wait()
 		close(assignmentsChan)
@@ -148,7 +140,7 @@ func main() {
 
 		// Calcular nuevos centroides concurrentemente
 		wg.Add(1)
-		go updateCentroids(points, assignments, k, &wg, newCentroidsChan)
+		go updateCentroids(points, assignments, k, newCentroidsChan, &wg)
 		wg.Wait()
 		newCentroids := <-newCentroidsChan
 
